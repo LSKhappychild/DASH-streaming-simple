@@ -45,15 +45,19 @@ public:
         IAdaptationSet* videoAdaptationSet = period->GetAdaptationSets().at(0);
         std::vector<IRepresentation*> representations = videoAdaptationSet->GetRepresentation();
 
-        uint32_t segmentNumber = representations[0]->GetSegmentTemplate()->GetStartNumber();
+        IRepresentation* bestRepresentation = selectRepresentation(representations);
+        // Download initialization segment before media segments
+        downloadInitializationSegment(videoAdaptationSet, bestRepresentation);
+
+        uint32_t segmentNumber = bestRepresentation->GetSegmentTemplate()->GetStartNumber();
         uint32_t maxSegments = 10;  // Number of segments to download (for testing)
 
         // For each segment, choose the appropriate representation and download
         for (uint32_t i = 0; i < maxSegments; ++i) {
             std::cout << "Downloading segment " << i << std::endl;
 
-            IRepresentation* bestRepresentation = selectRepresentation(representations);
-            downloadAndSaveSegment(bestRepresentation, segmentNumber);
+            bestRepresentation = selectRepresentation(representations);
+            downloadAndSaveSegment(videoAdaptationSet, bestRepresentation, segmentNumber);
             segmentNumber++;
         }
     }
@@ -89,7 +93,7 @@ private:
     }
 
     std::string downloadSegment(const std::string& segmentURL) {
-        std::cout << "Starting donwload of segment: " << segmentURL << std::endl;
+        std::cout << "Starting download of segment: " << segmentURL << std::endl;
 
         CURL* curl;
         CURLcode res;
@@ -161,19 +165,55 @@ private:
         return result;
     }
 
-    void downloadAndSaveSegment(IRepresentation* representation, uint32_t segmentNumber) {
+    void downloadInitializationSegment(IAdaptationSet* adaptationSet, IRepresentation* representation) {
+        ISegmentTemplate* segmentTemplate = representation->GetSegmentTemplate();
+        if (!segmentTemplate) {
+            std::cerr << "No segment template available for representation." << std::endl;
+            return;
+        }
+
+        // Determine the base URL
+        std::string baseURL;
+        if (!representation->GetBaseURLs().empty()) {
+            baseURL = representation->GetBaseURLs().at(0)->GetUrl();
+        } else if (!adaptationSet->GetBaseURLs().empty()) {
+            baseURL = adaptationSet->GetBaseURLs().at(0)->GetUrl();
+        } else {
+            baseURL = "http://localhost:8080";  // Or use the URL of the MPD
+        }
+
+        std::string representationID = representation->GetId();
+        std::string initUrl = segmentTemplate->Getinitialization();
+
+        // Replace placeholders
+        initUrl = replacePlaceholder(initUrl, "$RepresentationID$", representationID);
+        initUrl = replacePlaceholder(initUrl, "$Bandwidth$", std::to_string(representation->GetBandwidth()));
+
+        std::string initializationURL = baseURL + "/" + initUrl;
+
+        std::cout << "Downloading initialization segment: " << initializationURL << std::endl;
+        std::string initData = downloadSegment(initializationURL);
+
+        if (initData.length() <= 50) {    // Somehow failed, HTML error message
+            std::cerr << "Failed to download initialization segment: " << initializationURL << std::endl;
+            return;
+        }
+
+        // Save the initialization segment
+        saveSegmentToFile(0, initData, initUrl);
+    }
+
+    void downloadAndSaveSegment(IAdaptationSet* adaptationSet, IRepresentation* representation, uint32_t segmentNumber) {
         ISegmentTemplate* segmentTemplate = representation->GetSegmentTemplate();
         std::string baseURL;
 
-        if (representation->GetBaseURLs().empty()) {
-            // Try adaptation set's base URL
-            if (!representation->GetBaseURLs().empty()) {
-                baseURL = representation->GetBaseURLs().at(0)->GetUrl();
-            } else {
-                baseURL = "http://localhost:8080";  // Or use the URL of the MPD
-            }
-        } else {
+        // Determine the base URL
+        if (!representation->GetBaseURLs().empty()) {
             baseURL = representation->GetBaseURLs().at(0)->GetUrl();
+        } else if (!adaptationSet->GetBaseURLs().empty()) {
+            baseURL = adaptationSet->GetBaseURLs().at(0)->GetUrl();
+        } else {
+            baseURL = "http://localhost:8080";  // Or use the URL of the MPD
         }
 
         std::string mediaTemplate = segmentTemplate->Getmedia();
@@ -183,19 +223,21 @@ private:
         // Replace placeholders
         mediaUrl = replacePlaceholder(mediaUrl, "$RepresentationID$", representationID);
         mediaUrl = replacePlaceholder(mediaUrl, "$Number$", std::to_string(segmentNumber));
+        mediaUrl = replacePlaceholder(mediaUrl, "$Bandwidth$", std::to_string(representation->GetBandwidth()));
 
         std::string segmentURL = baseURL + "/" + mediaUrl;
 
         std::cout << "Downloading segment: " << segmentURL << std::endl;
         std::string segmentData = downloadSegment(segmentURL);
 
-        if(segmentData.length() <= 50) {    //Somehow failed, html error message
+        if (segmentData.length() <= 50) {    // Somehow failed, HTML error message
             std::cerr << "Failed to download segment: " << segmentURL << std::endl;
             return;
         }
 
         saveSegmentToFile(segmentNumber, segmentData, mediaUrl);
     }
+
     void saveSegmentToFile(uint32_t segmentNumber, const std::string& segmentData, std::string savename) {
         std::ofstream outFile(savename, std::ios::binary);
         outFile.write(segmentData.c_str(), segmentData.size());
