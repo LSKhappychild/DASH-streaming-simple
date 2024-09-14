@@ -1,0 +1,6 @@
+[submodule "library/civetweb"]
+	path = library/civetweb
+	url = https://github.com/civetweb/civetweb.git
+[submodule "library/libdash"]
+	path = library/libdash
+	url = https://github.com/bitmovin/libdash.git
